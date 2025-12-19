@@ -117,12 +117,15 @@ function isCanvasTransparent(canvas) {
 
 // supported texture semantics on a material
 const textureSemantics = [
+    'anisotropyMap',
     'clearCoatGlossMap',
     'clearCoatMap',
     'clearCoatNormalMap',
     'colorMap',
     'diffuseMap',
     'emissiveMap',
+    'iridescenceMap',
+    'iridescenceThicknessMap',
     'metalnessMap',
     'normalMap',
     'refractionMap',
@@ -413,8 +416,14 @@ class GltfExporter extends CoreExporter {
             pbr.baseColorFactor = [r, g, b, opacity];
         }
 
-        if (metalness !== 1) {
-            pbr.metallicFactor = metalness;
+        // For spec-gloss materials (useMetalness=false), always export as dielectric (metallicFactor=0)
+        // For metallic-roughness materials, export the actual metalness value
+        if (mat.useMetalness) {
+            if (metalness !== 1) {
+                pbr.metallicFactor = metalness;
+            }
+        } else {
+            pbr.metallicFactor = 0;
         }
 
         const roughness = glossInvert ? gloss : 1 - gloss;
@@ -433,6 +442,25 @@ class GltfExporter extends CoreExporter {
         }
 
         // === Material Extensions ===
+
+        // KHR_materials_anisotropy
+        if (mat.enableGGXSpecular && (mat.anisotropyIntensity !== 0 || mat.anisotropyRotation !== 0 || mat.anisotropyMap)) {
+            const anisotropyExt = {};
+
+            if (mat.anisotropyIntensity !== 0) {
+                anisotropyExt.anisotropyStrength = mat.anisotropyIntensity;
+            }
+
+            if (mat.anisotropyRotation !== 0) {
+                anisotropyExt.anisotropyRotation = mat.anisotropyRotation * math.DEG_TO_RAD;
+            }
+
+            this.attachTexture(resources, mat, anisotropyExt, 'anisotropyTexture', 'anisotropyMap', json);
+
+            if (Object.keys(anisotropyExt).length > 0) {
+                this.addExtension(json, output, 'KHR_materials_anisotropy', anisotropyExt);
+            }
+        }
 
         // KHR_materials_clearcoat
         if (mat.clearCoat > 0) {
@@ -482,6 +510,34 @@ class GltfExporter extends CoreExporter {
             });
         }
 
+        // KHR_materials_iridescence
+        if (mat.useIridescence) {
+            const iridescenceExt = {};
+
+            if (mat.iridescence !== 0) {
+                iridescenceExt.iridescenceFactor = mat.iridescence;
+            }
+
+            if (mat.iridescenceRefractionIndex !== 1.3) {
+                iridescenceExt.iridescenceIor = mat.iridescenceRefractionIndex;
+            }
+
+            if (mat.iridescenceThicknessMin !== 100) {
+                iridescenceExt.iridescenceThicknessMinimum = mat.iridescenceThicknessMin;
+            }
+
+            if (mat.iridescenceThicknessMax !== 400) {
+                iridescenceExt.iridescenceThicknessMaximum = mat.iridescenceThicknessMax;
+            }
+
+            this.attachTexture(resources, mat, iridescenceExt, 'iridescenceTexture', 'iridescenceMap', json);
+            this.attachTexture(resources, mat, iridescenceExt, 'iridescenceThicknessTexture', 'iridescenceThicknessMap', json);
+
+            if (Object.keys(iridescenceExt).length > 0) {
+                this.addExtension(json, output, 'KHR_materials_iridescence', iridescenceExt);
+            }
+        }
+
         // KHR_materials_sheen
         if (mat.useSheen) {
             const sheenExt = {};
@@ -504,7 +560,10 @@ class GltfExporter extends CoreExporter {
         }
 
         // KHR_materials_specular
-        if (mat.useMetalnessSpecularColor) {
+        // Export when:
+        // 1. useMetalnessSpecularColor is true (metallic workflow with specular color tint)
+        // 2. useMetalness is false (spec-gloss material) - preserve the specular color as F0
+        if (mat.useMetalnessSpecularColor || !mat.useMetalness) {
             const specularExt = {};
 
             if (!mat.specular.equals(Color.WHITE)) {
